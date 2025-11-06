@@ -50,13 +50,13 @@ MolGpKa_retrained/ : Code and data for retraining MolGpKa
 
 ## 0. Recommended file structure
 
-To run pKaLearn, we recommand you to have in the same folder the following directories:
+To run pKaLearn, we recommend you to have in the same folder the following directories:
 
-pKaLearn
-  |Datasets
-    |pickled_data
-  |GNN
-  |Model
+pKaLearn  
+&emsp;|Datasets  
+&emsp;&emsp;|pickled_data  
+&emsp;|GNN  
+&emsp;|Model  
 
 You can then place your datasets in .csv format in the Datasets folder, and run the commands in the GNN folder.
 
@@ -126,6 +126,7 @@ You can retrain on your own dataset by modifying train_pKa_predictor.py.
 # 🛠 Support
 
 Feel free to reach out via email or GitHub issues if you need help using or adapting the model.
+
 
 
 
