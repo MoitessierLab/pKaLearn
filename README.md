@@ -1,8 +1,8 @@
 # pKa-predictor
 
-Leveraging our Teaching Experience to Improve Machine Learning: Application to the Development of pKaLearn, a pKa Predictor.
-Jérôme Genzling, Ziling Luo, Benjamin Weiser, Nicolas Moitessier
-nicolas.moitessier@mcgill.ca
+Leveraging our Teaching Experience to Improve Machine Learning: Application to the Development of pKaLearn, a pKa Predictor. \n
+Jérôme Genzling, Ziling Luo, Benjamin Weiser, Nicolas Moitessier \n
+nicolas.moitessier@mcgill.ca \n
 2023-12-07 – revised 2025-11-06
 
 ![Graphical Abstract](Graphical-abstract300.png)
@@ -99,5 +99,6 @@ You can retrain on your own dataset by modifying train_pKa_predictor.py.
 # 🛠 Support
 
 Feel free to reach out via email or GitHub issues if you need help using or adapting the model.
+
 
 
