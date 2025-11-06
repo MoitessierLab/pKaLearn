@@ -1,17 +1,18 @@
 # pKa-predictor
 
-Leveraging our Teaching Experience to Improve Machine Learning: Application to pKa PredictionJérôme Genzling, Ziling Luo, Benjamin Weiser, Nicolas Moitessier
+Leveraging our Teaching Experience to Improve Machine Learning: Application to the Development of pKaLearn, a pKa Predictor.
+Jérôme Genzling, Ziling Luo, Benjamin Weiser, Nicolas Moitessier
 nicolas.moitessier@mcgill.ca
-2023-12-07 – revised 2025-05-16
+2023-12-07 – revised 2025-11-06
 
 ![Graphical Abstract](Graphical-abstract300.png)
 
-# 🔍 What is this?
+# 🔍 What is pKaLearn?
 
 A Graph Neural Network (GNN) model for:
 
-- Predicting pKa values of ionizable centers
-- Identifying protonation sites
+- Predicting pKa values of ionizable centers (test, test_with_IC)
+- Identifying protonation sites (infer)
 - Estimating dominant protonation states at a given pH
 - Supporting iterative protonation/deprotonation of polyprotic molecules
 
@@ -51,6 +52,7 @@ python main.py --mode usage
 All possible arguments and their default values will be printed.
 
 ## 2. Predict pKa on a sample set
+
 Your CSV will need to have at least two columns: 'Name' and 'Smiles'
 
 On Windows:
@@ -97,4 +99,5 @@ You can retrain on your own dataset by modifying train_pKa_predictor.py.
 # 🛠 Support
 
 Feel free to reach out via email or GitHub issues if you need help using or adapting the model.
+
 
