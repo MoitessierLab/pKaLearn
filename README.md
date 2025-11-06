@@ -48,6 +48,18 @@ MolGpKa_retrained/ : Code and data for retraining MolGpKa
 
 # 🚀 Getting Started with the GNN
 
+## 0. Recommended file structure
+
+To run pKaLearn, we recommand you to have in the same folder the following directories:
+
+pKaLearn
+  |Datasets
+    |pickled_data
+  |GNN
+  |Model
+
+You can then place your datasets in .csv format in the Datasets folder, and run the commands in the GNN folder.
+
 ## 1. See available options
 
 python main.py --mode usage
@@ -68,11 +80,15 @@ python main.py --mode infer --data_path ..\Datasets\ --input your_input.csv --in
 
 ## 3. Predict from a CSV in Python
 
-You can also use the predict() function directly:
+If you want to use pKaLearn and test it against pKa values (experimental values, for instance), your values need to be in a "pKa" column
 
-from predict import predict
+Then, run the following command:
 
-predicted_pkas, protonated_smiles = predict("your_dataset.csv", pH=7.4)
+python main.py --mode test --input your_input.csv > test_your_input.out
+
+If you want to test your molecules (which must be in the acidic form) with a specific center, you need to provide the center of the IC in the "Index" column. Indexes start at 0 for the first atom.
+
+python main.py --mode test_with_IC --input your_input.csv > testwIC_your_input.out
 
 ## 4. Verbose Levels
 
@@ -83,6 +99,14 @@ Use the --verbose flag to control output detail:
 --verbose 1: Summary of predictions + Some cleaning details
 
 --verbose 2: Detailed view of every deprotonation step
+
+## 5. Python pipelines
+
+If you prefer to call the model using Python lines, you can do so by using the predict() function directly:
+
+from predict import predict
+
+predicted_pkas, protonated_smiles = predict("your_dataset.csv", pH=7.4)
 
 # 📖 Citation
 
@@ -102,6 +126,7 @@ You can retrain on your own dataset by modifying train_pKa_predictor.py.
 # 🛠 Support
 
 Feel free to reach out via email or GitHub issues if you need help using or adapting the model.
+
 
 
 
