@@ -3,7 +3,6 @@ import torch
 import numpy as np
 import os
 import pickle
-import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from rdkit import Chem
@@ -468,7 +467,7 @@ def ionizeN(smiles, mol_original, num_of_atoms, acidic_nitrogens, acidic_oxygens
             if atom_idx not in negative_nitrogens:
                 negative_nitrogens.append(atom_idx)
 
-        elif element == 'N' and charge == 'none' and curr_atom.GetIdx() not in nitro_nitrogens:
+        elif element == 'N' and charge == 'none' and curr_atom.GetIdx() not in nitro_nitrogens and isAmide(curr_atom, mol_original) is False:
             if curr_atom.GetDegree() == 4 and curr_atom.GetNumImplicitHs() == 0 and curr_atom.GetNumExplicitHs() == 0:
                 if curr_atom.GetIdx() in ionizable_nitrogens:
                     ionizable_nitrogens.remove(curr_atom.GetIdx())
@@ -483,6 +482,7 @@ def ionizeN(smiles, mol_original, num_of_atoms, acidic_nitrogens, acidic_oxygens
                     j += 3
             elif curr_atom.GetDegree() == 3 and curr_atom.GetNumImplicitHs() == 0:
                 ionizable_nitrogens.append(atom_idx)
+                # print('ion_N, 485')
 
         elif element[0] == 'C' and charge == 'none' and args.carbons_included is True:
             acidic_carbons, isActivated = next_to_CO_Allyl(curr_atom, mol_original, acidic_carbons)
@@ -680,6 +680,7 @@ def parse_smiles(smiles, j, atom_idx, initial, ionizable_nitrogens, positive_nit
             positive_nitrogens.remove(atom_idx)
             if atom_idx not in ionizable_nitrogens:
                 ionizable_nitrogens.append(atom_idx)
+                # print('ion_N, 683')
             j += 1
             atom_idx += 1
             return False, smiles_A, j, atom_idx
@@ -704,6 +705,7 @@ def parse_smiles(smiles, j, atom_idx, initial, ionizable_nitrogens, positive_nit
             positive_nitrogens.remove(atom_idx)
             if atom_idx not in ionizable_nitrogens:
                 ionizable_nitrogens.append(atom_idx)
+                # print('ion_N, 708')
             if num_of_Hs == 0 and atom_idx in acidic_nitrogens:
                 acidic_nitrogens.remove(atom_idx)
             j += 1
@@ -723,6 +725,7 @@ def parse_smiles(smiles, j, atom_idx, initial, ionizable_nitrogens, positive_nit
             positive_nitrogens.remove(atom_idx)
             if atom_idx not in ionizable_nitrogens:
                 ionizable_nitrogens.append(atom_idx)
+                # print('ion_N, 728')
             j += 1
             atom_idx += 1
             return False, smiles_A, j, atom_idx
@@ -890,6 +893,7 @@ def parse_smiles(smiles, j, atom_idx, initial, ionizable_nitrogens, positive_nit
                 acidic_nitrogens.append(atom_idx)
             if atom_idx not in ionizable_nitrogens:
                 ionizable_nitrogens.append(atom_idx)
+                # print('ion_N, 896')
             j += 1
             atom_idx += 1
             return False, smiles_A, j, atom_idx
@@ -967,9 +971,10 @@ def find_centers(mol, i, smiles, name, initial, args):
                     if number_of_hydrogens > 0 and atom.GetIdx() not in acidic_nitrogens:  # if only 1 H it will be removed when neutralizing:
                         acidic_nitrogens.append(atom.GetIdx())
             else:
-                if atom.GetHybridization() == Chem.rdchem.HybridizationType.SP3 and number_of_bonds <= 3:
+                if atom.GetHybridization() == Chem.rdchem.HybridizationType.SP3 and number_of_bonds <= 3 and isAmide(atom,mol) is False:
                     if atom.GetIdx() not in ionizable_nitrogens:
                         ionizable_nitrogens.append(atom.GetIdx())
+                        # print('ion_N, 971')
                 elif atom.GetHybridization() == Chem.rdchem.HybridizationType.SP2 and number_of_hydrogens == 0:
                     nitro = 0
                     for bond in mol.GetBonds():
@@ -985,13 +990,15 @@ def find_centers(mol, i, smiles, name, initial, args):
                         nitro_nitrogens.append(atom.GetIdx())
                         continue
                     # tetrazole:
-                    if number_of_hydrogens == 0 and atom.GetIdx() not in ionizable_nitrogens and \
-                        isTetrazole(atom, mol, acidic_nitrogens, ionizable_nitrogens, number_of_unsaturations) is False:
+                    if atom.GetIdx() not in ionizable_nitrogens and \
+                        isTetrazole(atom, mol, acidic_nitrogens, ionizable_nitrogens, number_of_unsaturations) is False and isAmide(atom,mol) is False:
                             ionizable_nitrogens.append(atom.GetIdx())
+                            # print('ion_N, 989')
 
                     # aniline nitrogens are considered sp2 (no unsaturations)
-                    if number_of_unsaturations == 0 and atom.GetIdx() not in ionizable_nitrogens:
+                    if number_of_unsaturations == 0 and atom.GetIdx() not in ionizable_nitrogens and isAmide(atom,mol) is False:
                         ionizable_nitrogens.append(atom.GetIdx())
+                        # print('ion_N, 993')
 
                 # Diazole
                 if number_of_hydrogens == 1 and atom.GetIsAromatic() and atom.GetIdx() not in acidic_nitrogens:
@@ -1063,6 +1070,36 @@ def find_centers(mol, i, smiles, name, initial, args):
 
     return ionizable_nitrogens, charged_nitrogens, acidic_nitrogens, negative_oxygens, acidic_oxygens, acidic_carbons, nitro_nitrogens
 
+
+def isAmide(atom, mol):
+    #pattern_amide = Chem.MolFromSmarts('[NX3:1][CX3H1](=[OX1])')
+    pattern_amide = Chem.MolFromSmarts('[NX3][CX3](=[OX1])')
+    pattern_aniline = Chem.MolFromSmarts('[NX3][cc]')
+    pattern_sulfonamide = Chem.MolFromSmarts('[NX3][SX4](=[OX1])(=[OX1])')
+    pattern_nX3 = Chem.MolFromSmarts('[nX3]')
+    #print('change_ion 1070: ', atom.GetIdx())
+
+    for match in mol.GetSubstructMatches(pattern_amide):
+        if match[0] == atom.GetIdx(): # N is the first atom in SMARTS (label :1)
+            # print('change_ion 1074: is an amide')
+            return True
+
+    for match in mol.GetSubstructMatches(pattern_aniline):
+        if match[0] == atom.GetIdx(): # N is the first atom in SMARTS (label :1)
+            # print('change_ion 1074: is an aniline')
+            return True
+
+    for match in mol.GetSubstructMatches(pattern_sulfonamide):
+        if match[0] == atom.GetIdx(): # N is the first atom in SMARTS (label :1)
+            # print('change_ion 1074: is an sulfonamide')
+            return True
+
+    for match in mol.GetSubstructMatches(pattern_nX3):
+        if match[0] == atom.GetIdx(): # N is the first atom in SMARTS (label :1)
+            # print('change_ion 1074: is an nX3')
+            return True
+    #print('change_ion 1076: is NOT an amide')
+    return False
 
 def next_to_CO_Allyl(atom, mol, acidic_group):
     atom2 = atom

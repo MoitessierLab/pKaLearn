@@ -4,12 +4,16 @@ import torch
 import numpy as np
 import pandas as pd
 import time
+import os
 from tqdm import tqdm
+from rdkit import Chem
+from rdkit.Chem import Descriptors
 
+from collections import OrderedDict
 from utils import load_data, calculate_metrics, average, optimizer_to
 from plot_and_print import plot_figure1, plot_figure2, plot_figure3, print_results, print_inference, print_results_test
 from prepare_set import generate_infersets, dump_datasets, generate_datasets
-from GNN import GNN, GNN_New
+from GNN import GNN, GNN_TC, GNN_AFP
 from train import train, evaluate
 from torch_geometric.loader import DataLoader
 
@@ -17,16 +21,20 @@ from torch_geometric.loader import DataLoader
 def training(train_dataset, best_hypers, train_loader, test_loader, args):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    model_params = {k: v for k, v in best_hypers.items() if k.startswith("model_")}
+    model_params = {k: v for k, v in best_hypers.items()}
 
-    if args.GATv2Conv_Or_Other == "GATv2Conv":
+    if args.GATv2Conv_Or_Other == "TransformerConv":
+        best_trained_model = GNN_TC(feature_size=train_dataset[0].x.shape[1],
+                                     edge_dim=train_dataset[0].edge_attr.shape[1],
+                                     model_params=model_params)
+    elif args.GATv2Conv_Or_Other == "AttentiveFP":
+        best_trained_model = GNN_AFP(feature_size=train_dataset[0].x.shape[1],
+                                     edge_dim=train_dataset[0].edge_attr.shape[1],
+                                     model_params=model_params)
+    else:
         best_trained_model = GNN(feature_size=train_dataset[0].x.shape[1],
                                  edge_dim=train_dataset[0].edge_attr.shape[1],
                                  model_params=model_params)
-    else:
-        best_trained_model = GNN_New(feature_size=train_dataset[0].x.shape[1],
-                                     edge_dim=train_dataset[0].edge_attr.shape[1],
-                                     model_params=model_params)
 
     loss_fn = torch.nn.MSELoss()
 
@@ -79,7 +87,7 @@ def training(train_dataset, best_hypers, train_loader, test_loader, args):
         scheduler.step()
 
         # save the model is better on the validation set or close to the best
-        if val_loss < best_val_loss:
+        if val_loss < best_val_loss and args.print_models is True:
             best_val_loss = val_loss
             torch.save({
                 'epoch': epoch,
@@ -88,7 +96,7 @@ def training(train_dataset, best_hypers, train_loader, test_loader, args):
                 'train_loss': train_loss_all,
                 'test_loss': test_loss_all,
             }, args.save_dir + args.output + '_' + str(epoch) + '.pth')
-        elif val_loss < best_val_loss + 0.025:
+        elif val_loss < best_val_loss + 0.025 and args.print_models is True:
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': best_trained_model.state_dict(),
@@ -96,6 +104,15 @@ def training(train_dataset, best_hypers, train_loader, test_loader, args):
                 'train_loss': train_loss_all,
                 'test_loss': test_loss_all,
             }, args.save_dir + args.output + '_' + str(epoch) + '.pth')
+        elif val_loss < best_val_loss and args.print_models is False:
+            best_val_loss = val_loss
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': best_trained_model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'train_loss': train_loss_all,
+                'test_loss': test_loss_all,
+            }, args.save_dir + args.output + '_best.pth')
 
         # overwrite the "last" model
         torch.save({
@@ -219,10 +236,10 @@ def testing(best_trained_model, train_loader, test_loader, args):
     plot_figure2(train_labels, train_predicts, test_labels, test_predicts, args)
 
     # average over the random_smiles
-    train_predicts, train_labels, train_smiles, train_mol_num, train_error, = \
-        average(train_predicts, train_labels, train_smiles, train_mol_num, train_error, args)
-    test_predicts, test_labels, test_smiles, test_mol_num, test_error = \
-        average(test_predicts, test_labels, test_smiles, test_mol_num, test_error, args)
+    train_predicts, train_labels, train_smiles, train_mol_num, train_centers, train_ionization_states, train_error, = \
+        average(train_predicts, train_labels, train_smiles, train_mol_num, train_centers, train_ionization_states, train_error, args)
+    test_predicts, test_labels, test_smiles, test_mol_num, test_centers, test_ionization_states, test_error = \
+        average(test_predicts, test_labels, test_smiles, test_mol_num, test_centers, test_ionization_states, test_error, args)
 
     print('|----------------------------------------------------------------------------------------------------------------------------|', flush=True)
     print('| Training Set averaged over random smiles %-76s      |' % whiteSpace)
@@ -257,9 +274,11 @@ def inferring(args):
         'model_dropout_rate': 0,
         'model_dense_neurons': args.model_dense_neurons,
         'model_attention_heads': args.model_attention_heads,
+        'num_timesteps': args.num_timesteps,
+        'hidden_channels': args.hidden_channels
     }
 
-    model_params = {k: v for k, v in best_hypers.items() if k.startswith("model_")}
+    model_params = {k: v for k, v in best_hypers.items()} # if k.startswith("model_")}
     loss_fn = torch.nn.MSELoss()
 
     print('| Reading the files, preparing the features and computing pKa                                                                |')
@@ -280,6 +299,10 @@ def inferring(args):
     library_infer_ionization_states = []
 
     for i, small_mol in tqdm(data.iterrows(), total=data.shape[0]):
+        if Descriptors.ExactMolWt(Chem.MolFromSmiles(small_mol['Smiles'])) >= 1000:
+            raise ValueError(
+                f"You're trying to predict the pKa of a species that seems too big for a small molecule (>1000 g/mol): {small_mol['Smiles']}")
+
         if args.verbose > 1:
             print("|        | Initial inference                                                                        "
                   "                         |")
@@ -293,7 +316,7 @@ def inferring(args):
             infer_proposed_centers, infer_neutral, infer_ionization_states, ionized_smiles = \
             infer(i, small_mol, initial, ionized_smiles, [], infer_path, model_params, device, best_hypers, loss_fn, args)
 
-        ionized_mol_num = i + 1
+        ionized_mol_num = int(i) + 1
 
         if args.verbose > 1:
             print_inference(infer_predicts, infer_labels, infer_smiles, ionized_smiles, infer_mol_num, ionized_mol_num, infer_centers,
@@ -310,7 +333,7 @@ def inferring(args):
         all_infer_ionization_states = []
 
         found_pKas = 2
-        if len(infer_ionization_states) == 0:
+        if len(infer_ionization_states) == 0 or len(infer_ionization_states[0]) == 0 or len(infer_ionization_states[0][0]) == 0:
             found_pKas = 0
         else:
             if len(infer_ionization_states[0][0][0]) == 0:
@@ -464,17 +487,21 @@ def infer(i, small_mol, initial, ionized_smiles, ionization_states, infer_path, 
     # Loading data for training
     infer_data = load_data(args.infer_pickled)
 
-    if args.GATv2Conv_Or_Other == "GATv2Conv":
+    if args.GATv2Conv_Or_Other == "TransformerConv":
+        model_infer = GNN_TC(feature_size=infer_dataset[0].x.shape[1],
+                             edge_dim=infer_dataset[0].edge_attr.shape[1],
+                             model_params=model_params)
+    elif args.GATv2Conv_Or_Other == "AttentiveFP":
+        model_infer = GNN_AFP(feature_size=infer_dataset[0].x.shape[1],
+                              edge_dim=infer_dataset[0].edge_attr.shape[1],
+                              model_params=model_params)
+    else:
         model_infer = GNN(feature_size=infer_dataset[0].x.shape[1],
                           edge_dim=infer_dataset[0].edge_attr.shape[1],
                           model_params=model_params)
-    else:
-        model_infer = GNN_New(feature_size=infer_dataset[0].x.shape[1],
-                          edge_dim=infer_dataset[0].edge_attr.shape[1],
-                          model_params=model_params)
 
-    checkpoint = torch.load(args.model_dir + args.model_name, map_location=torch.device('cpu'), weights_only= True)
-    model_infer.load_state_dict(checkpoint['model_state_dict'])
+    ckpt_path = os.path.join(args.model_dir, args.model_name)
+    model_infer = load_model_weights(model_infer, ckpt_path)
     model_infer.eval()
 
     infer_loader = DataLoader(infer_data, best_hypers["batch_size"],
@@ -484,8 +511,26 @@ def infer(i, small_mol, initial, ionized_smiles, ionization_states, infer_path, 
         infer_mol_num, infer_neutral, infer_error, infer_ionization_states = \
         final_test(model=model_infer, loader=infer_loader, loss_fn=loss_fn, args=args)
 
+    infer_predicts, infer_labels, infer_smiles, infer_mol_num, infer_centers, infer_ionization_states, infer_error = \
+        average(infer_predicts, infer_labels, infer_smiles, infer_mol_num, infer_centers, infer_ionization_states, infer_error, args)
+
     return infer_predicts, infer_labels, infer_smiles, infer_smiles_base, infer_mol_num, infer_centers, \
         infer_proposed_centers, infer_neutral, infer_ionization_states, ionized_smiles
+
+
+def load_model_weights(model, path, map_location=torch.device("cpu")):
+    #Load the model depending on how it was saved
+    ckpt = torch.load(path, map_location=map_location, weights_only=True)
+    # Case 1: checkpoint dict with 'model_state_dict'
+    if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+        state_dict = ckpt["model_state_dict"]
+
+    # Case 2: raw state_dict (saved via torch.save(model.state_dict()))
+    elif isinstance(ckpt, (dict, OrderedDict)):
+        state_dict = ckpt
+
+    model.load_state_dict(state_dict)
+    return model
 
 
 def testing_with_IC(args):
@@ -506,18 +551,24 @@ def testing_with_IC(args):
         'model_fc_layers': args.n_FC_layers,
         'model_dropout_rate': 0,
         'model_dense_neurons': args.model_dense_neurons,
-        'model_attention_heads': args.model_attention_heads,
+        'num_timesteps': args.num_timesteps,
+        'hidden_channels': args.hidden_channels,
+        'model_attention_heads': args.model_attention_heads
     }
 
-    model_params = {k: v for k, v in best_hypers.items() if k.startswith("model_")}
+    model_params = {k: v for k, v in best_hypers.items()} # if k.startswith("model_")}
     loss_fn = torch.nn.MSELoss()
 
-    if args.GATv2Conv_Or_Other == "GATv2Conv":
-        model_test = GNN(feature_size=test_dataset[0].x.shape[1],
+    if args.GATv2Conv_Or_Other == "TransformerConv":
+        model_test = GNN_TC(feature_size=test_dataset[0].x.shape[1],
                          edge_dim=test_dataset[0].edge_attr.shape[1],
                          model_params=model_params)
+    elif args.GATv2Conv_Or_Other == "AttentiveFP":
+        model_test = GNN_AFP(feature_size=test_dataset[0].x.shape[1],
+                             edge_dim=test_dataset[0].edge_attr.shape[1],
+                             model_params=model_params)
     else:
-        model_test = GNN_New(feature_size=test_dataset[0].x.shape[1],
+        model_test = GNN(feature_size=test_dataset[0].x.shape[1],
                          edge_dim=test_dataset[0].edge_attr.shape[1],
                          model_params=model_params)
 
@@ -531,7 +582,7 @@ def testing_with_IC(args):
     test_loader = DataLoader(test_data, best_hypers["batch_size"],
                               num_workers=0, shuffle=False)
 
-    checkpoint = torch.load(args.model_dir + args.model_name, map_location=torch.device('cpu'))
+    checkpoint = torch.load(args.model_dir + args.model_name, map_location=torch.device('cpu'), weights_only=True)
     model_test.load_state_dict(checkpoint['model_state_dict'])
     model_test.eval()
 
@@ -542,8 +593,8 @@ def testing_with_IC(args):
         test_mol_num, test_neutral, test_error, test_ionization_states = \
         final_test(model=model_test, loader=test_loader, loss_fn=loss_fn, args=args)
 
-    test_predicts, test_labels, test_smiles, test_mol_num, test_error = \
-        average(test_predicts, test_labels, test_smiles, test_mol_num, test_error, args)
+    test_predicts, test_labels, test_smiles, test_mol_num, test_centers, test_ionization_states, test_error = \
+        average(test_predicts, test_labels, test_smiles, test_mol_num, test_centers, test_ionization_states, test_error, args)
 
     for i in range(len(test_predicts)):
         print('| %6.0f | %-89s | %5.2f | %5.2f | %5.2f |' % (test_mol_num[i], test_smiles[i], test_labels[i], test_predicts[i],

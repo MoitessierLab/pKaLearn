@@ -1,9 +1,11 @@
 
-import torch
 import torch.nn.functional as F
+import time
 
 from torch.nn import Linear, BatchNorm1d, LayerNorm, ModuleList
-from torch_geometric.nn import AttentionalAggregation, GATv2Conv, TransformerConv, GlobalAttention
+from torch_geometric.nn import AttentionalAggregation, GATv2Conv, TransformerConv, GlobalAttention, AttentiveFP
+
+import torch
 
 
 class GNN(torch.nn.Module):
@@ -62,9 +64,15 @@ class GNN(torch.nn.Module):
         # the corresponding molecules are given in batch_index
         #
         # Initial GATv2Conv transformation
+        # print ('GNN 76:\n' ,x, x.shape)
+        # print ('\n\nGNN 77:\n', batch_index)
         x = self.conv1(x, edge_index, edge_attr)
+        # print ('GNN 78:\n' ,x, x.shape)
+        # print ('\n\nGNN 79:\n', batch_index)
         x = torch.relu(self.transf1(x))
         x = self.bn1(x)
+        # print ('GNN 81:\n' ,x, x.shape)
+        # print ('\n\nGNN 82:\n', batch_index)
 
         # now layers of GATv2Conv
         for i in range(self.gnn_layers-1):
@@ -76,6 +84,7 @@ class GNN(torch.nn.Module):
         # But are still all there. We remove then from the node features
         # x may contain several molecules (the node indexes are for all of them)
         x = x[node_index]
+
         # And update the batch_index (tensor like: 0 0 0 0 0 1 1 1 1... indicating first 5 atoms are from the first
         # molecule,...
         mask = torch.zeros(batch_index.numel(), dtype=torch.bool)
@@ -110,9 +119,9 @@ class GNN(torch.nn.Module):
         return x
 
 
-class GNN_New(torch.nn.Module):
+class GNN_TC(torch.nn.Module):
     def __init__(self, feature_size, edge_dim, model_params):
-        super(GNN_New, self).__init__()
+        super(GNN_TC, self).__init__()
         embedding_size = model_params["model_embedding_size"]
         self.gnn_layers = model_params["model_gnn_layers"]
         self.dense_layers = model_params["model_fc_layers"]
@@ -182,6 +191,69 @@ class GNN_New(torch.nn.Module):
         batch_index = batch_index[mask]
         # Attention
         x = self.att(x, batch_index)
+
+        mol_formal_charge = mol_formal_charge[:, None]
+        torch.transpose(mol_formal_charge, 0, 1)
+        x = torch.cat([x, mol_formal_charge], axis=1)
+
+        # If we subtract, the element, electronegativity,... will be lost
+        center_formal_charge = center_formal_charge[:, None]
+        torch.transpose(center_formal_charge, 0, 1)
+        x = torch.cat([x, center_formal_charge], axis=1)
+
+        x = torch.relu(self.linear1(x))
+        x = F.dropout(x, p=self.p)
+
+        for i in range(self.dense_layers - 1):
+            x = torch.relu(self.fc_layers[i](x))
+            x = F.dropout(x, p=self.p)
+
+        x = self.out_layer(x)
+
+        return x
+
+
+class GNN_AFP(torch.nn.Module):
+    def __init__(self, feature_size, edge_dim, model_params):
+        super(GNN_AFP, self).__init__()
+        embedding_size = model_params["model_embedding_size"]
+        self.gnn_layers = model_params["model_gnn_layers"]
+        self.dense_layers = model_params["model_fc_layers"]
+        self.p = model_params["model_dropout_rate"]
+        dense_neurons = model_params["model_dense_neurons"]
+        self.num_timesteps = model_params["num_timesteps"]
+        self.hidden_channels = model_params["hidden_channels"]
+
+        self.conv_layers = ModuleList([])
+        self.transf_layers = ModuleList([])
+        self.bn_layers = ModuleList([])
+        self.fc_layers = ModuleList([])
+
+        # GNN Layers
+        self.conv1 = AttentiveFP(in_channels=feature_size,
+                                 out_channels=embedding_size,
+                                 hidden_channels=self.hidden_channels,
+                                 dropout=self.p,
+                                 edge_dim=edge_dim,
+                                 num_timesteps=self.num_timesteps,
+                                 num_layers=self.gnn_layers)
+
+        # Linear layers the formal charges (molecule and ionization center) will be added at this stage
+        # And acid and base embeddings will be concatenated
+        self.linear1 = Linear(embedding_size + 2, dense_neurons)
+
+        for i in range(self.dense_layers-1):
+            self.fc_layers.append(Linear(dense_neurons, int(dense_neurons / 4)))
+            dense_neurons = int(dense_neurons / 4)
+
+        self.out_layer = Linear(dense_neurons, 1)
+
+    def forward(self, x, edge_index, edge_attr, node_index, mol_formal_charge, center_formal_charge, batch_index):
+        # At this stage, x is a single tensor containing all the atoms of all the batch molecules. The references to
+        # the corresponding molecules are given in batch_index
+
+        # Initial GAT transformation
+        x = self.conv1(x, edge_index, edge_attr, batch_index)
 
         mol_formal_charge = mol_formal_charge[:, None]
         torch.transpose(mol_formal_charge, 0, 1)

@@ -11,7 +11,7 @@
 # pip install rdkit
 # pip install seaborn
 # pip install hyperopt
-# To vizualize smiles, https://www.cheminfo.org/flavor/malaria/Utilities/SMILES_generator___checker/index.html
+# To vizualize smiles, you may use: https://www.cheminfo.org/flavor/malaria/Utilities/SMILES_generator___checker/index.html
 
 import torch
 import numpy as np
@@ -21,17 +21,20 @@ import time
 import pandas as pd
 import copy
 from rdkit import Chem
-from rdkit.Chem import AllChem
+from rdkit.Chem import AllChem, Descriptors
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
-from GNN import GNN, GNN_New
+from GNN import GNN
 from prepare_set import generate_infersets, dump_datasets
 from transfer_chirality import transfer_chirality, process_transfer_chirality_in_batches
 from utils import calculate_metrics, load_data
 from argParser import argsParser
 from utils import find_protonation_state
+from collections import OrderedDict
 
+# Set defaults based on script location
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def set_seed(args, seed=42):
     torch.manual_seed(args.seed)
@@ -45,8 +48,8 @@ def set_seed(args, seed=42):
     torch.cuda.manual_seed_all(args.seed)
 
 
-def predict(csv_file, device=None, data_path=r'../Datasets/', mode='pH', pH = 7.4, model_dir =r'..\Model',
-            model_name=r'\model_4-4.pth', n_graph_layers=4, mask_size=4, infer_pickled=r'..\Datasets\pickled_data\infer_troubleshoot.pkl' ):
+def predict(csv_file, device=None, data_path=r'/Datasets/', mode='pH', pH = 7.4, model_dir =r'/Model',
+            model_name=r'train_AAc-1_best.pth', n_graph_layers=4, mask_size=4, infer_pickled='infer_troubleshoot.pkl' ):
     #csv_file can be a csv file or a pd.dataframe with the right columns
 
     now = time.localtime()
@@ -58,11 +61,16 @@ def predict(csv_file, device=None, data_path=r'../Datasets/', mode='pH', pH = 7.
 
     args = argsParser()
     set_seed(args)
-    args.data_path = data_path
+    default_data_path = os.path.join(BASE_DIR, "../Datasets")
+    default_model_dir = os.path.join(BASE_DIR, "../Model")
+    
+    args.data_path = data_path if data_path != '/Datasets/' else default_data_path
+    args.model_dir = model_dir if model_dir != '/Model' else default_model_dir
+    
     args.infer_pickled = infer_pickled
     args.n_graph_layers = n_graph_layers
     args.mask_size = mask_size
-    args.model_dir = model_dir
+    
     args.model_name = model_name
     args.pH = pH
     args.mode = mode
@@ -76,8 +84,7 @@ def predict(csv_file, device=None, data_path=r'../Datasets/', mode='pH', pH = 7.
     elif isinstance(csv_file, pd.DataFrame):
         data = csv_file
 
-
-    infer_path = args.infer_pickled
+    infer_path = os.path.join(os.path.dirname(args.csv_path), "pickled_data", args.infer_pickled)
 
     device = torch.device("cpu")
 
@@ -96,19 +103,22 @@ def predict(csv_file, device=None, data_path=r'../Datasets/', mode='pH', pH = 7.
 
     model_params = {k: v for k, v in best_hypers.items() if k.startswith("model_")}
     loss_fn = torch.nn.MSELoss()
-    library_infer_predicts = []
-    library_infer_labels = []
-    library_infer_smiles = []
-    library_infer_smiles_base = []
-    library_infer_mol_num = []
-    library_infer_centers = []
-    library_infer_proposed_centers = []
-    library_infer_ionization_states = []
-
+    # library_infer_predicts = []
+    # library_infer_labels = []
+    # library_infer_smiles = []
+    # library_infer_smiles_base = []
+    # library_infer_mol_num = []
+    # library_infer_centers = []
+    # library_infer_proposed_centers = []
+    # library_infer_ionization_states = []
+    
     for i, small_mol in tqdm(data.iterrows(), total=len(data)):
         # initial_proposed_center = int(small_mol['Index']) + 1
+        if Descriptors.ExactMolWt(Chem.MolFromSmiles(small_mol['Smiles']))>= 1000:
+            raise ValueError(f"You're trying to predict the pKa of a species that seems too big for a small molecule (>1000 g/mol): {small_mol['Smiles']}")
         ionized_smiles = ''
         initial = True
+        
         infer_predicts, infer_labels, infer_smiles, infer_smiles_base, infer_mol_num, infer_centers, \
             infer_proposed_centers, infer_neutral, infer_ionization_states, ionized_smiles = \
             infer(i, small_mol, initial, ionized_smiles, [], infer_path, model_params, device, best_hypers, loss_fn,
@@ -126,7 +136,7 @@ def predict(csv_file, device=None, data_path=r'../Datasets/', mode='pH', pH = 7.
         all_infer_ionization_states = []
 
         found_pKas = 2
-        if len(infer_ionization_states) == 0:
+        if len(infer_ionization_states) == 0 or len(infer_ionization_states[0]) == 0 or len(infer_ionization_states[0][0]) == 0:
             found_pKas = 0
         else:
             if len(infer_ionization_states[0][0][0]) == 0:
@@ -226,7 +236,7 @@ def predict(csv_file, device=None, data_path=r'../Datasets/', mode='pH', pH = 7.
             if len(infer_predicts) > 0:
                 for item in range(len(infer_predicts)):
                     if len(all_infer_smiles) == 0 or all_infer_smiles[len(all_infer_smiles) - 1] != infer_smiles[item] \
-                            or all_infer_centers[len(all_infer_smiles) - 1] != infer_centers[item]:
+                            or all_infer_centers[len(all_infer_smiles)-1] != infer_centers[item]:
                         all_infer_predicts.append(infer_predicts[item])
                         all_infer_labels.append(infer_labels[item])
                         all_infer_smiles.append(infer_smiles[item])
@@ -234,16 +244,18 @@ def predict(csv_file, device=None, data_path=r'../Datasets/', mode='pH', pH = 7.
                         all_infer_centers.append(infer_centers[item])
                         all_infer_proposed_centers.append(infer_proposed_centers[item])
                         all_infer_ionization_states.append(infer_ionization_states[0][item])
+                        all_infer_ionization_states.append(infer_ionization_states[0][item])
 
         # if args.verbose > 1 and len(all_infer_smiles) > 0:
         #     print("|        | Final: %-91s----------------|" % (all_infer_smiles[0]))
 
         # print_inference(all_infer_predicts, all_infer_labels, all_infer_smiles, all_infer_mol_num,
         #                 all_infer_centers, initial_proposed_center, args)
+        preds, labels, smiles, mol_num = find_protonation_state(all_infer_predicts,
+                                                                all_infer_labels,
+                                                                all_infer_smiles, ionized_smiles, all_infer_mol_num, ionized_mol_num, initial, args)
 
-        preds, labels, smiles, mol_num = find_protonation_state(all_infer_predicts, all_infer_labels, all_infer_smiles, ionized_smiles, all_infer_mol_num, ionized_mol_num, initial, args)
         if len(smiles) != 0:
-
             results_smiles_pred.append(smiles[0])
             results_pka_pred.append(preds[0])
         else:
@@ -282,20 +294,25 @@ def infer(i, small_mol, initial, ionized_smiles, ionization_states, infer_path, 
             infer_centers, infer_proposed_centers, infer_neutrals, infer_ionization_states, ionized_smiles
 
     # Loading data for training
-    infer_data = load_data(args.infer_pickled)
+    infer_data = load_data(infer_path)
 
     if args.GATv2Conv_Or_Other == "GATv2Conv":
         model_infer = GNN(feature_size=infer_dataset[0].x.shape[1],
                           edge_dim=infer_dataset[0].edge_attr.shape[1],
                           model_params=model_params)
-    else:
-        model_infer = GNN_New(feature_size=infer_dataset[0].x.shape[1],
-                          edge_dim=infer_dataset[0].edge_attr.shape[1],
-                          model_params=model_params)
+    #else:
+    #    model_infer = GNN_New(feature_size=infer_dataset[0].x.shape[1],
+    #                      edge_dim=infer_dataset[0].edge_attr.shape[1],
+    #                      model_params=model_params)
 
-    checkpoint = torch.load(args.model_dir + args.model_name, map_location=torch.device('cpu'), weights_only=True)
-    model_infer.load_state_dict(checkpoint['model_state_dict'])
+    ckpt_path = os.path.join(args.model_dir, args.model_name)
+    model_infer = load_model_weights(model_infer, ckpt_path)
     model_infer.eval()
+
+    # model_path = os.path.join(args.model_dir, args.model_name)
+    # checkpoint = torch.load(model_path, map_location=torch.device('cpu'), weights_only=True)
+    # model_infer.load_state_dict(checkpoint['model_state_dict'])
+    # model_infer.eval()
 
     infer_loader = DataLoader(infer_data, best_hypers["batch_size"],
                               num_workers=0, shuffle=False)
@@ -307,7 +324,19 @@ def infer(i, small_mol, initial, ionized_smiles, ionization_states, infer_path, 
     return infer_predicts, infer_labels, infer_smiles, infer_smiles_base, infer_mol_num, infer_centers, \
         infer_proposed_centers, infer_neutral, infer_ionization_states, ionized_smiles
 
+def load_model_weights(model, path, map_location=torch.device("cpu")):
+    #Load the model depending on how it was saved
+    ckpt = torch.load(path, map_location=map_location, weights_only=True)
+    # Case 1: checkpoint dict with 'model_state_dict'
+    if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+        state_dict = ckpt["model_state_dict"]
 
+    # Case 2: raw state_dict (saved via torch.save(model.state_dict()))
+    elif isinstance(ckpt, (dict, OrderedDict)):
+        state_dict = ckpt
+
+    model.load_state_dict(state_dict)
+    return model
 
 def final_test(loader, model, loss_fn, args):
     device = torch.device("cuda:0" if torch.cuda.is_available() and args.mode == 'train' else "cpu")
@@ -429,7 +458,8 @@ def export_sdf_rdkit(dataframe, output_file='molecules_prostates.sdf'):
 
 if __name__ == '__main__':
 
-    csv_path = r'C:\Users\Jerome Genzling\OneDrive - McGill University\Documents\Research\pKa predictor\ACIE Submission\pKaPredictorPipeline\Datasets\trbl.csv'
+    args = argsParser()
+    csv_path = args.csv_path
     csv = pd.read_csv(csv_path)
     a,b = predict(csv)
     print('Results:')
@@ -450,35 +480,3 @@ if __name__ == '__main__':
     updated_csv.to_csv(csv_path.replace('.csv' , '_updated.csv') , index=False)
     export_sdf_rdkit(updated_csv, csv_path.replace('.csv' , '_updated.sdf'))
 
-
-
-    # smi_path = r"C:\Users\Jerome Genzling\OneDrive - McGill University\Documents\Research\pKa predictor\ACIE Submission\pKaPredictorPipeline\Datasets\missing_compounds.smi"
-    '''writer = Chem.SDWriter('test_fabio.sdf')
-    smi = pd.read_csv(smi_path, header=None)
-    smi.columns = ['Smiles']
-    for idx, row in smi.iterrows():
-        smiles = row.get('Smiles')
-        if '.' in smiles:
-            continue
-
-        if not isinstance(smiles, str) or not smiles.strip():
-            print(f"Skipping row {idx}: invalid or missing SMILES string.")
-            continue
-
-        mol = Chem.MolFromSmiles(smiles)
-        if mol is None:
-            print(f"Could not parse SMILES on row {idx}: '{smiles}'")
-            continue
-
-        # Optionally, set a name or other properties to the molecule (will be included in the SDF)
-        mol.SetProp("_Name", row.get('Name'))
-
-        # Add missing (implicit) Hs as explicit Hs
-        mol_with_all_h = Chem.AddHs(mol, addCoords=True)
-
-        # Optionally generate coordinates (comment out if you don’t need them)
-        AllChem.EmbedMolecule(mol_with_all_h, randomSeed=0xf00d)
-
-        # Write to output SDF
-        writer.write(mol_with_all_h)
-    writer.close()'''

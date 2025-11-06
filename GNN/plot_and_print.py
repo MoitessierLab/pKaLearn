@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from rdkit import Chem
 
-from GNN import GNN, GNN_New
+from GNN import GNN, GNN_TC
 from utils import find_protonation_state, compute_mae, search
 
 seed = 42

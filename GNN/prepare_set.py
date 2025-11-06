@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import pickle
 import copy
+import time
 
 from rdkit import Chem
 from tqdm import tqdm
@@ -30,6 +31,7 @@ def generate_datasets(filename, train_or_test, args):
 
         keep = False
         smiles_A = mol['Smiles']
+        smiles_i = smiles_A
 
         # In case of extra lines in the csv
         if smiles_A is None:
@@ -52,7 +54,7 @@ def generate_datasets(filename, train_or_test, args):
 
         mol_obj_B = copy.deepcopy(mol_obj_A)
 
-        if args.verbose > 0 and args.mode != 'test_with_IC':
+        if (args.verbose > 0 and args.mode != 'test_with_IC') or args.verbose > 99:
             print('| original: %-112s |' % smiles_A)
 
         # Removing the hydrogen bonds (eg: [OH:15] should become O
@@ -73,10 +75,11 @@ def generate_datasets(filename, train_or_test, args):
         smiles_A = smiles_A.replace('([H])', '')
         smiles_A = smiles_A.replace('[H]', '')
         smiles_A = smiles_A.replace('[C-]', 'C')
+        smiles_A = smiles_A.replace('-c', 'c')
 
         negative_nitrogens = []
         smiles_A = addHs(smiles_A, mol_obj_A, mol_obj_A.GetNumAtoms(), negative_nitrogens)
-        if args.verbose > 0 and args.mode != 'test_with_IC':
+        if (args.verbose > 0 and args.mode != 'test_with_IC') or args.verbose > 99:
             print('|  revised: %-112s |' % smiles_A)
 
         # Get ionisation center index
@@ -85,6 +88,10 @@ def generate_datasets(filename, train_or_test, args):
         # Prepare base from acid
         base_found, mol_obj_B, smiles_B = from_acid_to_base(mol_obj_B, center)
         if base_found is False:
+            if args.mode == 'test_with_IC':
+                print('|  SMILES: %-113s |' % smiles_i)
+                print('| No corresponding base found. Did you provide the acidic form?                              '
+                      '                                |')
             continue
 
         # Get node features
@@ -211,7 +218,7 @@ def generate_datasets(filename, train_or_test, args):
             local_atoms = np.where(distance_matrix[center] <= args.mask_size)[0]
     
             node_index = torch.tensor(local_atoms, dtype=torch.long)
-    
+
             data = Data(x=node_features,
                         edge_index=edge_index,
                         edge_attr=edge_features,
@@ -239,6 +246,9 @@ def generate_datasets(filename, train_or_test, args):
 
 def generate_infersets(small_mol, i, initial, ionized_smiles, ionization_states, args):
 
+    # construct a random number generator - rng
+    rng = np.random.default_rng(12345)
+
     datasets = []
     atom_idx = 0
     atom_k_idx = 0
@@ -255,7 +265,7 @@ def generate_infersets(small_mol, i, initial, ionized_smiles, ionization_states,
     invalid = 0
     if 'Index' in small_mol.keys():
         if isinstance(small_mol['Index'], list):
-            proposed_center = int(small_mol['Index'][-1]) + 1
+            proposed_center = int(small_mol['Index'][0]) + 1
         else:
             proposed_center = int(small_mol['Index']) + 1
 
@@ -279,11 +289,14 @@ def generate_infersets(small_mol, i, initial, ionized_smiles, ionization_states,
 
     # Removing explicit hydrogens:
     smiles = smiles.replace('([H])', '')
-    smiles = smiles.replace('([H])', '')
+    smiles = smiles.replace('[H]', '')
     smiles = smiles.replace('[C-]', 'C')
+    smiles = smiles.replace('-c', 'c')
     smiles = smiles.replace('[n]', 'n')
-    # Add explicit hydrogens for terminal nitrogens
-    smiles = smiles.replace('(N)', '([NH2])')
+    # Add explicit hydrogens for terminal nitrogens and oxygens
+    #smiles = smiles.replace('(N)', '([NH2])')
+    #smiles = smiles.replace('(O)', '([OH])')
+    #smiles = smiles.replace('(S)', '([SH])')
 
     # Checking the validity of the SMILES string
     mol_test = Chem.MolFromSmiles(smiles, sanitize=True)
@@ -486,106 +499,115 @@ def generate_infersets(small_mol, i, initial, ionized_smiles, ionization_states,
             original_center = center
             center = move_center_in_graph(node_features_A, node_features_B, edge_index, distance_matrix, center)
 
-            # The two molecules have identical features (element,...), so we concatenate all of them in acids + the ones
-            # that may be different in bases (aromaticity, hybridization, number of hydrogens, charge)
-            base_feature = 0
-            base_hybrid = -1
-            base_arom = -1
-            base_Hs = -1
-            base_charge = -1
+            number_of_graphs = args.n_random_smiles
+            if number_of_graphs == 0:
+                number_of_graphs = 1
 
-            # Feature 1: Atomic number (#1-11)
-            if args.atom_feature_element is True:
-                base_feature += 11
+            for k in range(number_of_graphs):
+                # the edge (bonds) indexes are changed (new atom numbers) but their order does not change.
+                # So, no need to randomize edge_features.
+                if k != 0 or args.n_random_smiles != 0:
+                    center = randomize_graph(node_features_A, node_features_B, edge_index, distance_matrix, center, rng)
+                # The two molecules have identical features (element,...), so we concatenate all of them in acids + the ones
+                # that may be different in bases (aromaticity, hybridization, number of hydrogens, charge)
+                base_feature = 0
+                base_hybrid = -1
+                base_arom = -1
+                base_Hs = -1
+                base_charge = -1
 
-            if args.atom_feature_electronegativity is True:
-                base_feature += 1
+                # Feature 1: Atomic number (#1-11)
+                if args.atom_feature_element is True:
+                    base_feature += 11
 
-            if args.atom_feature_hardness is True:
-                base_feature += 1
+                if args.atom_feature_electronegativity is True:
+                    base_feature += 1
 
-            if args.atom_feature_atom_size is True:
-                base_feature += 1
+                if args.atom_feature_hardness is True:
+                    base_feature += 1
 
-            # Feature 2: Hybridization (#14-16)
-            if args.atom_feature_hybridization is True:
-                base_hybrid = base_feature
-                base_feature += 3
+                if args.atom_feature_atom_size is True:
+                    base_feature += 1
 
-            # Feature 3: Aromaticity (#17)
-            if args.atom_feature_aromaticity is True:
-                base_arom = base_feature
-                base_feature += 1
+                # Feature 2: Hybridization (#14-16)
+                if args.atom_feature_hybridization is True:
+                    base_hybrid = base_feature
+                    base_feature += 3
 
-            # Feature 4: Number of rings (#18-20)
-            if args.atom_feature_number_of_rings is True:
-                base_feature += 3
+                # Feature 3: Aromaticity (#17)
+                if args.atom_feature_aromaticity is True:
+                    base_arom = base_feature
+                    base_feature += 1
 
-            # Feature 5: Ring Size (#21-24)
-            if args.atom_feature_ring_size is True:
-                base_feature += 4
+                # Feature 4: Number of rings (#18-20)
+                if args.atom_feature_number_of_rings is True:
+                    base_feature += 3
 
-            # Feature 6: Number of hydrogen (#25-28)
-            if args.atom_feature_number_of_Hs is True:
-                base_Hs = base_feature
-                base_feature += 4
+                # Feature 5: Ring Size (#21-24)
+                if args.atom_feature_ring_size is True:
+                    base_feature += 4
 
-            # Feature 7: Atom formal charge (#29-31)
-            if args.atom_feature_formal_charge is True:
-                base_charge = base_feature
-                base_feature += 3
+                # Feature 6: Number of hydrogen (#25-28)
+                if args.atom_feature_number_of_Hs is True:
+                    base_Hs = base_feature
+                    base_feature += 4
 
-            if args.acid_or_base == "acid":
-                node_features = node_features_A
-            elif args.acid_or_base == "base":
-                node_features = node_features_B
-            elif args.acid_or_base == "both":
-                node_features = node_features_A
-                if base_hybrid > -1:
-                    node_features = torch.cat([node_features, node_features_B[:, base_hybrid:base_hybrid+3]], 1)
+                # Feature 7: Atom formal charge (#29-31)
+                if args.atom_feature_formal_charge is True:
+                    base_charge = base_feature
+                    base_feature += 3
 
-                if base_arom > -1:
-                    node_features = torch.cat([node_features, node_features_B[:, base_arom:base_arom+1]], 1)
+                if args.acid_or_base == "acid":
+                    node_features = node_features_A
+                elif args.acid_or_base == "base":
+                    node_features = node_features_B
+                elif args.acid_or_base == "both":
+                    node_features = node_features_A
+                    if base_hybrid > -1:
+                        node_features = torch.cat([node_features, node_features_B[:, base_hybrid:base_hybrid+3]], 1)
 
-                if base_Hs > -1:
-                    node_features = torch.cat([node_features, node_features_B[:, base_Hs:base_Hs+4]], 1)
+                    if base_arom > -1:
+                        node_features = torch.cat([node_features, node_features_B[:, base_arom:base_arom+1]], 1)
 
-                if base_charge > -1:
-                    node_features = torch.cat([node_features, node_features_B[:, base_charge:base_charge+3]], 1)
+                    if base_Hs > -1:
+                        node_features = torch.cat([node_features, node_features_B[:, base_Hs:base_Hs+4]], 1)
 
-            # Below we define the local atoms around the center (common to acids and bases)
-            local_atoms = np.where(distance_matrix[center] <= args.mask_size)[0]
+                    if base_charge > -1:
+                        node_features = torch.cat([node_features, node_features_B[:, base_charge:base_charge+3]], 1)
 
-            node_index = torch.tensor(local_atoms, dtype=torch.long)
+                # Below we define the local atoms around the center (common to acids and bases)
+                local_atoms = np.where(distance_matrix[center] <= args.mask_size)[0]
 
-            if args.verbose > 2:
-                print("\n| Saving | smiles", smiles_A)
-                print("|        | N|, N+, NH, N-, O-, OH, CH: %s %s %s %s %s %s %s"
-                      % (ionizable_nitrogens, positive_nitrogens, acidic_nitrogens, negative_nitrogens, negative_oxygens,
-                         acidic_oxygens, acidic_carbons))
+                node_index = torch.tensor(local_atoms, dtype=torch.long)
 
-            ionization_states = [copy.deepcopy(ionizable_nitrogens), copy.deepcopy(positive_nitrogens),
-                                 copy.deepcopy(acidic_nitrogens), copy.deepcopy(negative_nitrogens),
-                                 copy.deepcopy(negative_oxygens), copy.deepcopy(acidic_oxygens),
-                                 copy.deepcopy(acidic_carbons), copy.deepcopy(nitro_nitrogens)]
+                if args.verbose > 2:
+                    print("|        |                                                                                                                   |\n| Saving | smiles", smiles_A)
+                    print("|        | N|, N+, NH, N-, O-, OH, CH: %s %s %s %s %s %s %s"
+                          % (ionizable_nitrogens, positive_nitrogens, acidic_nitrogens, negative_nitrogens, negative_oxygens,
+                             acidic_oxygens, acidic_carbons))
 
-            data = Data(x=node_features,
-                        edge_index=edge_index,
-                        edge_attr=edge_features,
-                        node_index=node_index,
-                        mol_formal_charge=mol_formal_charge,
-                        center_formal_charge=center_formal_charge,
-                        ionization_center=original_center+1,
-                        proposed_center=proposed_center,
-                        mol_number=i+1,
-                        y=label,
-                        neutral=True,
-                        smiles=smiles_A,
-                        smiles_base=smiles_B,
-                        error=error,
-                        ionization_state=ionization_states)
+                ionization_states = [copy.deepcopy(ionizable_nitrogens), copy.deepcopy(positive_nitrogens),
+                                     copy.deepcopy(acidic_nitrogens), copy.deepcopy(negative_nitrogens),
+                                     copy.deepcopy(negative_oxygens), copy.deepcopy(acidic_oxygens),
+                                     copy.deepcopy(acidic_carbons), copy.deepcopy(nitro_nitrogens)]
 
-            datasets.append(data)
+                data = Data(x=node_features,
+                            edge_index=edge_index,
+                            edge_attr=edge_features,
+                            node_index=node_index,
+                            mol_formal_charge=mol_formal_charge,
+                            center_formal_charge=center_formal_charge,
+                            ionization_center=original_center+1,
+                            proposed_center=proposed_center,
+                            mol_number=i+1,
+                            y=label,
+                            neutral=True,
+                            smiles=smiles_A,
+                            smiles_base=smiles_B,
+                            error=error,
+                            ionization_state=ionization_states)
+
+                datasets.append(data)
 
     return datasets, ionized_smiles
 

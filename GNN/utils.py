@@ -4,28 +4,44 @@ import torch
 import numpy as np
 import os
 import pickle
-import seaborn as sns
+#import seaborn as sns
 import matplotlib.pyplot as plt
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import mean_absolute_error, mean_squared_error, root_mean_squared_error, r2_score
 from rdkit import Chem
 
 
 def set_cuda_visible_device(ngpus):
     import subprocess
-    import os
     empty = []
     for i in range(8):
-        command = 'nvidia-smi -i '+str(i)+' | grep "0%" | wc -l'
-        output = subprocess.check_output(command, shell=True).decode("utf-8")
-        if int(output) == 1:
-            empty.append(i)
+        try:
+            # Run nvidia-smi for GPU i
+            result = subprocess.check_output(
+                ["nvidia-smi", "-i", str(i)],
+                shell=True
+            ).decode("utf-8", errors="ignore")
+        except subprocess.CalledProcessError:
+            # This GPU index doesn't exist — skip
+            continue
+
+        # Detect if GPU is mostly idle
+        # (look for " 0%" in the utilization column)
+        for line in result.splitlines():
+            if "No devices were found" in line:
+                break
+            if "MiB" in line and "%" in line:
+                # typical line: "|  0   GeForce RTX 3090  ...  0%   123MiB / 24268MiB ..."
+                if "0%" in line.split():
+                    empty.append(i)
+                break  # stop after first GPU usage line
+
     if len(empty) < ngpus:
         print('| available gpus are less than required')
         exit(-1)
-    cmd = ''
-    for i in range(ngpus):        
-        cmd += str(empty[i])+','
-    return cmd
+
+    # return something like "0,1,2,"
+    return ",".join(str(g) for g in empty[:ngpus]) + ","
+
 
 
 def count_parameters(model):
@@ -74,8 +90,7 @@ def calculate_metrics(y_pred, y_true, mol_num, args):
 
     mae = mean_absolute_error(pred, label)
     mse = mean_squared_error(pred, label)
-
-    rmse = mean_squared_error(pred, label, squared=False)
+    rmse = root_mean_squared_error(pred, label)
     r2 = r2_score(pred, label)
     print("| Number of molecules:  %-101.0f|" % len(pred))
     print("| MAE:                  %-101.3f|" % mae)
@@ -95,12 +110,6 @@ def find_protonation_state(predicts, labels, smiles, ionized_smiles, mol_num, io
     temp_mol_num = []
 
     unique_mol_num = list(dict.fromkeys(mol_num))
-    if len(unique_mol_num) == 0:
-        pH_predicts.append(14.0)
-        pH_labels.append(0)
-        pH_smiles.append(ionized_smiles)
-        pH_mol_num.append(mol_num)
-        return pH_predicts, pH_labels, pH_smiles, pH_mol_num
     for count in range(len(unique_mol_num)):
         temp_predicts.clear()
         temp_labels.clear()
@@ -123,15 +132,13 @@ def find_protonation_state(predicts, labels, smiles, ionized_smiles, mol_num, io
             #    found = 99
             #    temp_pH = 99
             # if the pKa is low but still higher (closer to user defined pH) that the one previously saved
-            # if temp_predicts[i] > temp_pH and temp_pH < args.pH:
-            # No longer need this condition because the minimum pka may not be the last protonation state, i.e not the one we want
-            # ex: O=C1N[C@@H](c2cccs2)C(=O)N1C[C@H]1CCSC1
-            #     found = i
-            #     temp_pH = temp_predicts[i]
-            # if pKa values are higher than the user defined pH, we take the lowest
-            if temp_predicts[i] >= args.pH:
+            if temp_predicts[i] > temp_pH and temp_pH < args.pH:
                 found = i
-                # temp_pH = temp_predicts[i]
+                temp_pH = temp_predicts[i]
+            # if pKa values are higher than the user defined pH, we take the lowest
+            elif temp_predicts[i] < temp_pH and temp_predicts[i] >= args.pH:
+                found = i
+                temp_pH = temp_predicts[i]
 
         if found == -1 and len(predicts) == 0:
             pH_predicts.append(14.0)
@@ -299,31 +306,47 @@ def swap_tensor_values(original_tensor, from_idx, to_idx):
     return new_tensor
 
 
-def average(predicts, labels, smiles, mol_num, error, args):
+def average(predicts, labels, smiles, mol_num, test_centers, ionization_states, error, args):
     predicts_average = []
     labels_average = []
     smiles_average = []
     mol_num_average = []
+    mol_name_average = []
     error_average = []
     count_average = []
+    test_centers_average = []
+    ionization_states_average = []
+    ionization_states_all = []
 
     for i in range(len(mol_num)):
-        if mol_num[i] in mol_num_average:
-            idx = mol_num_average.index(mol_num[i])
+
+        newCenter = str(mol_num[i]) + "-" + str(test_centers[i])
+        if newCenter in mol_name_average:
+            idx = mol_name_average.index(newCenter)
             count_average[idx] = float(count_average[idx]) + 1.0
             predicts_average[idx] = float(predicts_average[idx]) + float(predicts[i])
         else:
             mol_num_average.append(mol_num[i])
+            mol_name_average.append(newCenter)
             count_average.append(1.0)
             labels_average.append(labels[i])
             smiles_average.append(smiles[i])
             error_average.append(error[i])
             predicts_average.append(predicts[i])
+            test_centers_average.append(test_centers[i])
+
+            if args.mode == 'test' or args.mode == 'infer':
+
+                for j in range(len(ionization_states)):
+                    if i<= len(ionization_states[j]):
+                        ionization_states_average.append(ionization_states[j][i])
+
+    ionization_states_all.append(ionization_states_average)
 
     for i in range(len(mol_num_average)):
         predicts_average[i] = float(predicts_average[i])/float(count_average[i])
 
-    return predicts_average, labels_average, smiles_average, mol_num_average, error_average
+    return predicts_average, labels_average, smiles_average, mol_num_average, test_centers_average, ionization_states_all, error_average
 
 
 def swap_bond_atoms(mol_A, mol_B, center, distance_matrix):

@@ -13,6 +13,7 @@
 # pip install seaborn
 # pip install hyperopt
 # pip install scikit-learn
+
 # To visualise smiles, you may use: https://www.cheminfo.org/flavor/malaria/Utilities/SMILES_generator___checker/index.html
 
 import torch
@@ -103,6 +104,10 @@ if __name__ == '__main__':
             'model_dropout_rate': args.dropout_rate,
             'model_dense_neurons': args.model_dense_neurons,
             'model_attention_heads': args.model_attention_heads,
+            'num_layers': args.n_graph_layers,
+            'dropout': args.dropout_rate,
+            'num_timesteps': args.num_timesteps,
+            'hidden_channels': args.hidden_channels
         }
         print('| Preparing the data loaders...                                                                                              |', flush=True)
         train_loader = DataLoader(train_data, best_hypers["batch_size"],
@@ -114,13 +119,13 @@ if __name__ == '__main__':
         print('|----------------------------------------------------------------------------------------------------------------------------|', flush=True)
         # training the model
         best_trained_model = training(train_dataset, best_hypers, train_loader, test_loader, args)
-        
+
         torch.save(best_trained_model.state_dict(), args.save_dir + args.output + '.pth')
 
         testing(best_trained_model, train_loader, test_loader, args)
 
     # Optimizing the hyperparameters
-    if args.mode == "hyperopt":
+    elif args.mode == "hyperopt":
         train_file = args.data_path + args.train_data
         train_dataset = generate_datasets(train_file, 'Train', args)
         train_path = args.train_pickled
@@ -141,7 +146,7 @@ if __name__ == '__main__':
 
         print('|----------------------------------------------------------------------------------------------------------------------------|', flush=True)
         # training the model
-        hyperoptimize(train_dataset, train_data, test_data, args)
+        #hyperoptimize(train_dataset, train_data, test_data, args)
 
     elif args.mode == 'usage':
         usage()
