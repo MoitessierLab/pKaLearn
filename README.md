@@ -1,4 +1,4 @@
-# pKa-predictor
+# pKaLearn
 
 Leveraging our Teaching Experience to Improve Machine Learning: Application to the Development of pKaLearn, a pKa Predictor.
 
@@ -102,6 +102,7 @@ You can retrain on your own dataset by modifying train_pKa_predictor.py.
 # 🛠 Support
 
 Feel free to reach out via email or GitHub issues if you need help using or adapting the model.
+
 
 
 
