@@ -94,7 +94,7 @@ python main.py --mode test_with_IC --input your_input.csv > testwIC_your_input.o
 
 Use the --verbose flag to control output detail:
 
---verbose 0: No details printed in the output (silent mode)
+--verbose 0: No details printed in the output (silent mode) --> Default
 
 --verbose 1: Summary of predictions + Some cleaning details
 
@@ -126,6 +126,7 @@ You can retrain on your own dataset by modifying train_pKa_predictor.py.
 # 🛠 Support
 
 Feel free to reach out via email or GitHub issues if you need help using or adapting the model.
+
 
 
 
